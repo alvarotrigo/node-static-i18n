@@ -1,224 +1,370 @@
-fs      = require 'fs-extra'
-cheerio = require 'cheerio'
-_       = require 'lodash'
-i18n    = require 'i18next'
-async   = require 'async'
-path    = require 'path'
-glob    = require 'glob'
-yaml    = require 'js-yaml'
-S       = require 'string'
+(function() {
+  var S, absolutePathRegex, async, cheerio, closingTagRegex, conditionalCommentRegex, defaults, fixPaths, fs, getOptions, getOutput, getPath, glob, i18n, loadResources, outputFile, parseTranslations, path, translateAttributes, translateConditionalComment, translateConditionalComments, translateElem, yaml, _;
 
-defaults =
-  selector: '[data-t]'
-  attrSelector: '[data-attr-t]',
-  attrInterpolateSelector: '[data-attr-t-interpolate]',
-  useAttr: true
-  replace: false
-  locales: ['en']
-  fixPaths: true
-  locale: 'en'
-  files: '**/*.html'
-  baseDir: process.cwd()
-  removeAttr: true
-  outputDir: undefined
-  attrSuffix: '-t'
-  attrInterpolateSuffix: '-t-interpolate'
-  allowHtml: false
-  exclude: []
-  fileFormat: 'json'
-  localeFile: '__lng__.__fmt__'
-  outputDefault: '__file__'
-  outputOther: '__lng__/__file__'
-  localesPath: 'locales'
-  outputOverride: {}
-  encoding: 'utf8'
-  translateConditionalComments: false
-  i18n:
-    resGetPath: 'locales/__lng__.json'
-    setJqueryExt: false
+  fs = require('fs-extra');
 
-absolutePathRegex = new RegExp('^(?:[a-z]+:)?//', 'i')
-conditionalCommentRegex = /(\s*\[if .*?\]\s*>\s*)(.*?)(\s*<!\s*\[endif\]\s*)/i
-closingTagRegex = /<\/.+?>/g
+  cheerio = require('cheerio');
 
-parseTranslations = (format, rawTranslations, callback) ->
-  switch format
-    when '.yml', '.yaml'
-      try
-        callback null, yaml.load(rawTranslations)
-      catch e
-        callback e
-    when '.json'
-      try
-        callback null, JSON.parse(rawTranslations)
-      catch e
-        callback e
-    else
-      callback {message: 'unknown format'}
+  _ = require('lodash');
 
-loadResources = (locale, options, callback) ->
-  file = path.join(options.localesPath, options.localeFile).replace('__lng__', locale)
-  extension =  path.extname file
-  fs.readFile file, options.encoding, (err, data) ->
-    return callback(err) if err
-    parseTranslations extension, data, callback
+  i18n = require('i18next');
 
-getOptions = (baseOptions) ->
-  options = _.merge {}, defaults, baseOptions
-  options.localeFile = options.localeFile.replace('__fmt__', options.fileFormat)
-  unless baseOptions?.i18n?.resGetPath
-    if path.extname(options.localeFile) == '.json'
-      options.i18n.resGetPath = path.join options.localesPath, options.localeFile
-    else
-      options.i18n.resGetPath = path.join options.localesPath, '__lng__.json'
-  unless baseOptions?.i18n?.lng
-    options.i18n.lng = options.locale
-  if _.isUndefined(baseOptions?.outputDir)
-    options.outputDir = path.join(process.cwd(), 'i18n')
-  options
+  async = require('async');
 
-getOutput = (file, locale, options, absolute=true) ->
-  if options.outputOverride?[locale]?[file]
-    output = options.outputOverride[locale][file]
-  else if locale == options.locale
-    output = options.outputDefault
-  else
-    output = options.outputOther
-  outputFile = output.replace('__lng__', locale).replace('__file__', file)
-  if absolute
-    outdir = if _.isString(options.outputDir) then options.outputDir else options.baseDir
-    path.join outdir, outputFile
-  else
-    outputFile
+  path = require('path');
 
-translateAttributes = ($elem, options, t) ->
-  selectorAttr = /^\[(.*?)\]$/.exec(options.attrSelector)?[1]
-  selectorInterpolateAttr = /^\[(.*?)\]$/.exec(options.attrInterpolateSelector)?[1]
-  interpolate = false
-  _.each $elem.attr(), (v, k) ->
-    if S(k).endsWith(options.attrInterpolateSuffix)
-      interpolate = true
-  _.each $elem.attr(), (v, k) ->
-    return if _.isEmpty(v) || k == selectorAttr
-    if S(k).endsWith(options.attrSuffix)
-      attr = S(k).chompRight(options.attrSuffix).s
-      trans = t(v)
-      if interpolate
-        trans = v.replace /{{([^{}]*)}}/g, (aa, bb) ->
-          return t(bb)
-      $elem.attr(attr, trans)
-      $elem.attr(k, null) if options.removeAttr
-  $elem.attr(selectorAttr, null) if selectorAttr? && options.removeAttr
-  $elem.attr(selectorInterpolateAttr, null) if selectorInterpolateAttr?
+  glob = require('glob');
 
-translateElem = ($, elem, options, t) ->
-  $elem = $(elem)
-  if options.useAttr && attr = /^\[(.*?)\]$/.exec(options.selector)
-    key = $elem.attr(attr[1])
-    $elem.attr(attr[1], null) if options.removeAttr
-  key = $elem.text() if _.isEmpty(key)
-  return if _.isEmpty(key)
-  trans = t(key)
-  if options.replace
-    $elem.replaceWith trans
-  else
-    if options.allowHtml
-      $elem.html(trans)
-    else
-      $elem.text(trans)
+  yaml = require('js-yaml');
 
-getPath = (fpath, locale, options) ->
-  filepath = path.relative(options.baseDir, options.file)
-  output = getOutput filepath, locale, options, false
-  diff = path.relative(path.dirname(output), '')
-  if _.isEmpty(diff) then fpath else "#{diff}/#{fpath}"
+  S = require('string');
 
-fixPaths = ($, locale, options) ->
-  _.each {'script[src]': 'src', 'link[href]': 'href', 'img[src]': 'src', 'source[src]': 'src',}, (v, k) ->
-    $(k).each ->
-      src = $(this).attr(v)
-      unless src[0] == '/' || absolutePathRegex.test(src)
-        filepath = getPath src, locale, options
-        $(this).attr(v, filepath)
+  defaults = {
+    selector: '[data-t]',
+    attrSelector: '[data-attr-t]',
+    interpolateSelector: '[data-t-interpolate]',
+    attrInterpolateSelector: '[data-attr-t-interpolate]',
+    useAttr: true,
+    replace: false,
+    locales: ['en'],
+    fixPaths: true,
+    locale: 'en',
+    files: '**/*.html',
+    baseDir: process.cwd(),
+    removeAttr: true,
+    outputDir: void 0,
+    attrSuffix: '-t',
+    attrInterpolateSuffix: '-t-interpolate',
+    allowHtml: false,
+    exclude: [],
+    fileFormat: 'json',
+    localeFile: '__lng__.__fmt__',
+    outputDefault: '__file__',
+    outputOther: '__lng__/__file__',
+    localesPath: 'locales',
+    outputOverride: {},
+    encoding: 'utf8',
+    translateConditionalComments: false,
+    i18n: {
+      resGetPath: 'locales/__lng__.json',
+      setJqueryExt: false
+    }
+  };
 
-translateConditionalComment = (node, locale, options, t) ->
-  content = node.data
-  match = conditionalCommentRegex.exec(content)
-  return unless match
-  result = exports.translate(match[2], locale, options, t)
-  # NOTE: closing tag is added on parsing, so extra </html> or whatsoever
-  # may be added. Find closing tags, and check if they are in the original input
-  # Remove them from the output if they were not there before
-  closingTags = result.match closingTagRegex
-  _.each closingTags, (closingTag) ->
-    return unless content.indexOf(closingTag) == -1
-    result = result.replace closingTag, ''
-  node.data = match[1] + result + match[3]
+  absolutePathRegex = new RegExp('^(?:[a-z]+:)?//', 'i');
 
-translateConditionalComments = ($, rootNode, locale, options, t) ->
-  rootNode.contents().each (i, node) ->
-    if node.type == 'comment'
-      translateConditionalComment(node, locale, options, t)
-    else
-      translateConditionalComments($, $(node), locale, options, t)
+  conditionalCommentRegex = /(\s*\[if .*?\]\s*>\s*)(.*?)(\s*<!\s*\[endif\]\s*)/i;
 
-exports.translate = (html, locale, options, t) ->
-  $ = cheerio.load(html, {decodeEntities: false})
-  translateConditionalComments $, $.root(), locale, options, t if options.translateConditionalComments
-  elems = $(options.selector)
-  elems.each ->
-    translateElem $, this, options, t
-  $(options.attrSelector).each ->
-    translateAttributes $(this), options, t
-  if options.file && options.fixPaths
-    fixPaths $, locale, options
-  $.html()
+  closingTagRegex = /<\/.+?>/g;
 
-exports.process = (rawHtml, options, callback) ->
-  options = getOptions options
-  i18n.init options.i18n, ->
-    async.mapSeries options.locales, (locale, cb) ->
-      i18n.setLng locale, (err, t) ->
-        t = err unless t?
-        loadResources locale, options, (err, resources) ->
-          i18n.addResourceBundle locale, 'translation', resources unless err || _.isEmpty(resources)
-          html = exports.translate rawHtml, locale, options, t
-          cb err, html
-    , (err, results) ->
-      callback err, _.zipObject(options.locales, results)
+  parseTranslations = function(format, rawTranslations, callback) {
+    var e;
+    switch (format) {
+      case '.yml':
+      case '.yaml':
+        try {
+          return callback(null, yaml.load(rawTranslations));
+        } catch (_error) {
+          e = _error;
+          return callback(e);
+        }
+        break;
+      default:
+        return callback({
+          message: 'unknown format'
+        });
+    }
+  };
 
+  loadResources = function(locale, options, callback) {
+    var extension, file;
+    file = path.join(options.localesPath, options.localeFile).replace('__lng__', locale);
+    extension = path.extname(file);
+    if (extension === '.json') {
+      return callback(null);
+    }
+    return fs.readFile(file, options.encoding, function(err, data) {
+      if (err) {
+        return callback(err);
+      }
+      return parseTranslations(extension, data, callback);
+    });
+  };
 
-outputFile = (file, options, results, callback) ->
-  async.each _.keys(results), (locale, cb) ->
-    result = results[locale]
-    filepath = path.relative(options.baseDir, file)
-    output = getOutput filepath, locale, options
-    fs.outputFile output, result, cb
-  , (err) ->
-    callback err, results
+  getOptions = function(baseOptions) {
+    var options, _ref, _ref1;
+    options = _.merge({}, defaults, baseOptions);
+    options.localeFile = options.localeFile.replace('__fmt__', options.fileFormat);
+    if (!(baseOptions != null ? (_ref = baseOptions.i18n) != null ? _ref.resGetPath : void 0 : void 0)) {
+      if (path.extname(options.localeFile) === '.json') {
+        options.i18n.resGetPath = path.join(options.localesPath, options.localeFile);
+      } else {
+        options.i18n.resGetPath = path.join(options.localesPath, '__lng__.json');
+      }
+    }
+    if (!(baseOptions != null ? (_ref1 = baseOptions.i18n) != null ? _ref1.lng : void 0 : void 0)) {
+      options.i18n.lng = options.locale;
+    }
+    if (_.isUndefined(baseOptions != null ? baseOptions.outputDir : void 0)) {
+      options.outputDir = path.join(process.cwd(), 'i18n');
+    }
+    return options;
+  };
 
-exports.processFile = (file, options, callback) ->
-  options = getOptions options
-  options.file ?= file
-  fs.readFile file, options.encoding, (err, html) ->
-    return callback(err) if err
-    exports.process html, options, (err, results) ->
-      return callback(err) if err
-      if options.outputDir
-        outputFile file, options, results, callback
-      else
-        callback err, results
+  getOutput = function(file, locale, options, absolute) {
+    var outdir, output, outputFile, _ref, _ref1;
+    if (absolute == null) {
+      absolute = true;
+    }
+    if ((_ref = options.outputOverride) != null ? (_ref1 = _ref[locale]) != null ? _ref1[file] : void 0 : void 0) {
+      output = options.outputOverride[locale][file];
+    } else if (locale === options.locale) {
+      output = options.outputDefault;
+    } else {
+      output = options.outputOther;
+    }
+    outputFile = output.replace('__lng__', locale).replace('__file__', file);
+    if (absolute) {
+      outdir = _.isString(options.outputDir) ? options.outputDir : options.baseDir;
+      return path.join(outdir, outputFile);
+    } else {
+      return outputFile;
+    }
+  };
 
-exports.processDir = (dir, options, callback) ->
-  options.baseDir ?= dir
-  glob path.join(dir, options.files ? defaults.files), (err, files) ->
-    return callback(err) if err
-    files = _.reject files, (f) ->
-      f = path.relative options.baseDir, f
-      _.some options.exclude, (i) ->
-        if i.test then i.test(f) else f.indexOf(i) == 0
-    async.mapSeries files, (file, cb) ->
-      exports.processFile file, options, cb
-    , (err, results) ->
-      files = _.map files, (f) -> path.relative(dir, f)
-      callback err, _.zipObject files, results
+  translateAttributes = function($elem, options, t) {
+    var interpolate, selectorAttr, selectorInterpolateAttr, _ref, _ref1;
+    selectorAttr = (_ref = /^\[(.*?)\]$/.exec(options.attrSelector)) != null ? _ref[1] : void 0;
+    selectorInterpolateAttr = (_ref1 = /^\[(.*?)\]$/.exec(options.attrInterpolateSelector)) != null ? _ref1[1] : void 0;
+    interpolate = false;
+    _.each($elem.attr(), function(v, k) {
+      if (S(k).endsWith(options.attrInterpolateSuffix)) {
+        return interpolate = true;
+      }
+    });
+    _.each($elem.attr(), function(v, k) {
+      var attr, trans;
+      if (_.isEmpty(v) || k === selectorAttr) {
+        return;
+      }
+      if (S(k).endsWith(options.attrSuffix)) {
+        attr = S(k).chompRight(options.attrSuffix).s;
+        trans = t(v);
+        if (interpolate) {
+          trans = v.replace(/{{([^{}]*)}}/g, function(aa, bb) {
+            return t(bb);
+          });
+        }
+        $elem.attr(attr, trans);
+        if (options.removeAttr) {
+          return $elem.attr(k, null);
+        }
+      }
+    });
+    if ((selectorAttr != null) && options.removeAttr) {
+      $elem.attr(selectorAttr, null);
+    }
+    if (selectorInterpolateAttr != null) {
+      return $elem.attr(selectorInterpolateAttr, null);
+    }
+  };
+
+  translateElem = function($, elem, options, t) {
+    var $elem, attr, key, trans;
+    $elem = $(elem);
+    if (options.useAttr && (attr = /^\[(.*?)\]$/.exec(options.selector))) {
+      key = $elem.attr(attr[1]);
+      if (options.removeAttr) {
+        $elem.attr(attr[1], null);
+      }
+    }
+    if (_.isEmpty(key)) {
+      key = $elem.text();
+    }
+    if (_.isEmpty(key)) {
+      return;
+    }
+    trans = t(key);
+    if (options.replace) {
+      return $elem.replaceWith(trans);
+    } else {
+      if (options.allowHtml) {
+        return $elem.html(trans);
+      } else {
+        if($elem.filter(options.interpolateSelector).length){
+          trans = trans.replace(/{{([^{}]*)}}/g, function(aa, bb) {
+            return t(bb);
+          });
+        }
+        return $elem.text(trans);
+      }
+    }
+  };
+
+  getPath = function(fpath, locale, options) {
+    var diff, filepath, output;
+    filepath = path.relative(options.baseDir, options.file);
+    output = getOutput(filepath, locale, options, false);
+    diff = path.relative(path.dirname(output), '');
+    if (_.isEmpty(diff)) {
+      return fpath;
+    } else {
+      return "" + diff + "/" + fpath;
+    }
+  };
+
+  fixPaths = function($, locale, options) {
+    return _.each({
+      'script[src]': 'src',
+      'link[href]': 'href',
+      'img[src]': 'src',
+      'source[src]': 'src'
+    }, function(v, k) {
+      return $(k).each(function() {
+        var filepath, src;
+        src = $(this).attr(v);
+        if (!(src[0] === '/' || absolutePathRegex.test(src))) {
+          filepath = getPath(src, locale, options);
+          return $(this).attr(v, filepath);
+        }
+      });
+    });
+  };
+
+  translateConditionalComment = function(node, locale, options, t) {
+    var closingTags, content, match, result;
+    content = node.data;
+    match = conditionalCommentRegex.exec(content);
+    if (!match) {
+      return;
+    }
+    result = exports.translate(match[2], locale, options, t);
+    closingTags = result.match(closingTagRegex);
+    _.each(closingTags, function(closingTag) {
+      if (content.indexOf(closingTag) !== -1) {
+        return;
+      }
+      return result = result.replace(closingTag, '');
+    });
+    return node.data = match[1] + result + match[3];
+  };
+
+  translateConditionalComments = function($, rootNode, locale, options, t) {
+    return rootNode.contents().each(function(i, node) {
+      if (node.type === 'comment') {
+        return translateConditionalComment(node, locale, options, t);
+      } else {
+        return translateConditionalComments($, $(node), locale, options, t);
+      }
+    });
+  };
+
+  exports.translate = function(html, locale, options, t) {
+    var $, elems;
+    $ = cheerio.load(html, {
+      decodeEntities: false
+    });
+    if (options.translateConditionalComments) {
+      translateConditionalComments($, $.root(), locale, options, t);
+    }
+    elems = $(options.selector);
+    elems.each(function() {
+      return translateElem($, this, options, t);
+    });
+    $(options.attrSelector).each(function() {
+      return translateAttributes($(this), options, t);
+    });
+    if (options.file && options.fixPaths) {
+      fixPaths($, locale, options);
+    }
+    return $.html();
+  };
+
+  exports.process = function(rawHtml, options, callback) {
+    options = getOptions(options);
+    return i18n.init(options.i18n, function() {
+      return async.mapSeries(options.locales, function(locale, cb) {
+        return i18n.setLng(locale, function(err, t) {
+          if (t == null) {
+            t = err;
+          }
+          return loadResources(locale, options, function(err, resources) {
+            var html;
+            if (!(err || _.isEmpty(resources))) {
+              i18n.addResourceBundle(locale, 'translation', resources);
+            }
+            html = exports.translate(rawHtml, locale, options, t);
+            return cb(err, html);
+          });
+        });
+      }, function(err, results) {
+        return callback(err, _.zipObject(options.locales, results));
+      });
+    });
+  };
+
+  outputFile = function(file, options, results, callback) {
+    return async.each(_.keys(results), function(locale, cb) {
+      var filepath, output, result;
+      result = results[locale];
+      filepath = path.relative(options.baseDir, file);
+      output = getOutput(filepath, locale, options);
+      return fs.outputFile(output, result, cb);
+    }, function(err) {
+      return callback(err, results);
+    });
+  };
+
+  exports.processFile = function(file, options, callback) {
+    options = getOptions(options);
+    if (options.file == null) {
+      options.file = file;
+    }
+    return fs.readFile(file, options.encoding, function(err, html) {
+      if (err) {
+        return callback(err);
+      }
+      return exports.process(html, options, function(err, results) {
+        if (err) {
+          return callback(err);
+        }
+        if (options.outputDir) {
+          return outputFile(file, options, results, callback);
+        } else {
+          return callback(err, results);
+        }
+      });
+    });
+  };
+
+  exports.processDir = function(dir, options, callback) {
+    var _ref;
+    if (options.baseDir == null) {
+      options.baseDir = dir;
+    }
+    return glob(path.join(dir, (_ref = options.files) != null ? _ref : defaults.files), function(err, files) {
+      if (err) {
+        return callback(err);
+      }
+      files = _.reject(files, function(f) {
+        f = path.relative(options.baseDir, f);
+        return _.some(options.exclude, function(i) {
+          if (i.test) {
+            return i.test(f);
+          } else {
+            return f.indexOf(i) === 0;
+          }
+        });
+      });
+      return async.mapSeries(files, function(file, cb) {
+        return exports.processFile(file, options, cb);
+      }, function(err, results) {
+        files = _.map(files, function(f) {
+          return path.relative(dir, f);
+        });
+        return callback(err, _.zipObject(files, results));
+      });
+    });
+  };
+
+}).call(this);
